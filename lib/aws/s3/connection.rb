@@ -158,8 +158,6 @@ module AWS
         
       module Management #:nodoc:
         def self.included(base)
-          base.cattr_accessor :connections
-          base.connections = {}
           base.extend ClassMethods
         end
         
@@ -209,7 +207,8 @@ module AWS
             # After you've already established the default connection, just specify 
             # the difference for subsequent connections
             options = default_connection.options.merge(options) if connected?
-            connections[connection_name] = Connection.connect(options)
+            Thread.current[:aws_s3_connections] ||= {}
+            Thread.current[:aws_s3_connections][connection_name] = Connection.connect(options)
           end
           
           # Returns the connection for the current class, or Base's default connection if the current class does not
@@ -218,29 +217,37 @@ module AWS
           # If not connection has been established yet, NoConnectionEstablished will be raised.
           def connection
             if connected?
-              connections[connection_name] || default_connection
+              connection_called(connection_name) || default_connection
             else
               raise NoConnectionEstablished
             end
           end
           
+          def connection_called(name)
+            Thread.current[:aws_s3_connections] ||= {}
+            Thread.current[:aws_s3_connections][name]
+          end
+          
           # Returns true if a connection has been made yet.
           def connected?
-            !connections.empty?
+            Thread.current[:aws_s3_connections] ||= {}
+            !Thread.current[:aws_s3_connections].empty?
           end
           
           # Removes the connection for the current class. If there is no connection for the current class, the default
           # connection will be removed.
           def disconnect(name = connection_name)
-            name       = default_connection unless connections.has_key?(name)
-            connection = connections[name]
-            connection.http.finish if connection.persistent?
-            connections.delete(name)
+            name       = default_connection_name unless connections.has_key?(name)
+            if connection = connection_called(name)
+              connection.http.finish if connection.persistent?
+              connections.delete(name)
+            end
           end
           
-          # Clears *all* connections, from all classes, with prejudice. 
+          # Clears *all* connections, from all classes, for the current thread, with prejudice. 
           def disconnect!
-            connections.each_key {|connection| disconnect(connection)}
+            Thread.current[:aws_s3_connections] ||= {}
+            Thread.current[:aws_s3_connections].each_key {|name| disconnect(name)}
           end
 
           private
@@ -253,7 +260,7 @@ module AWS
             end
 
             def default_connection
-              connections[default_connection_name]
+              connection_called(default_connection_name)
             end
         end
       end
